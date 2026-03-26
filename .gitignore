@@ -1,0 +1,50 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+*.egg
+.venv/
+venv/
+env/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# PyTorch / AI models
+*.pt
+*.pth
+*.onnx
+*.bin
+*.safetensors
+
+# Data
+*.npy
+*.npz
+*.h5
+*.hdf5
+
+# Logs
+*.log
+
+# Environment
+.env
+.env.local
+
+# COLMAP output
+colmap_output/
+
+# Compiled firmware
+cansat_firmware/*.hex
+cansat_firmware/*.elf
+cansat_firmware/*.o
+cansat_firmware/*.d

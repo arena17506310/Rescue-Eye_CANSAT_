@@ -1,0 +1,47 @@
+# RESCUE-EYE .claudeignore
+# Claude Code가 탐색하지 않을 파일/폴더
+
+# Python 캐시
+__pycache__/
+*.pyc
+.pytest_cache/
+
+# 가상환경
+.venv/
+venv/
+env/
+
+# 모델 가중치 (수 GB 바이너리)
+*.pt
+*.pth
+*.onnx
+*.bin
+weights/
+checkpoints/
+
+# 이미지/데이터 원본
+*.jpg
+*.jpeg
+*.png
+*.tiff
+raw_data/
+domain/training_data/
+
+# 빌드/출력
+build/
+dist/
+*.o
+*.elf
+*.hex
+
+# IDE/시스템
+.vscode/
+.idea/
+.DS_Store
+
+# 로그
+logs/
+*.log
+
+# Git
+.git/
