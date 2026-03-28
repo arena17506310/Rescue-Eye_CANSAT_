@@ -3,7 +3,7 @@
 
 ---
 
-## 1. 분석 파이프라인 전체 흐름
+## 1. 분석 파이프라인 전체 흐름 (DA3 메인 + COLMAP fallback)
 
 ```
 SD카드 이미지들
@@ -11,22 +11,22 @@ SD카드 이미지들
     ▼ [전처리]
     Blur 수치 로그 기반 이미지 선별
     │
-    ▼ [1단계] COLMAP SfM
-    카메라 포즈 복원 (항공 이미지 특화, GPS 고도로 초기화)
-    출력: 각 이미지의 위치/방향 + Sparse Point Cloud
+    ▼ [1단계] DA3 단독 추론 (메인 경로)
+    use_ray_pose=True로 자체 포즈 추정 + Dense Depth + 3D 메시(glb)
+    출력: depth map, confidence map, camera poses, Point Cloud, 3D 메시
     │
-    ▼ [2단계] Depth Anything 3 (DA3)
-    COLMAP 포즈를 입력으로 멀티뷰 Dense Depth 생성
-    실제 물리 거리(m) 직접 예측 + 스케일 보정 완료
-    출력: Dense Point Cloud (m 단위 확정)
-    ※ DUSt3R + Depth Anything V2 역할을 DA3 단일 모델로 통합
+    ├─ confidence >= THRESHOLD → 메인 경로 계속
     │
-    ▼ [3단계] SAM2
+    └─ confidence < THRESHOLD → [COLMAP fallback]
+       │  COLMAP SfM으로 포즈만 복원
+       │  복원된 포즈를 DA3에 입력하여 depth + 3D 재생성
+       │
+    ▼ [2단계] SAM2
     Void 후보 주변 구조물 인스턴스 분리
     → Lean-to / V-shape / Pancake 유형 판별 + 안정성 점수
     │
-    ▼ [4단계] Florence-2
-    도메인 프롬프트로 시각적 입구 탐지 (Grounding DINO 대체)
+    ▼ [3단계] Florence-2
+    도메인 프롬프트로 시각적 입구 탐지
     Region 단위 정밀 이해 → 낮은 오탐률
     │
     ▼ [융합] Fusion Logic
@@ -37,9 +37,73 @@ SD카드 이미지들
     → 부피(m³) 계산 → 1.5m³ 기준 생존 판정
     │
     ▼ [출력]
-    3D 구조 우선순위 지도
+    3D 구조 우선순위 지도 + 3D 메시(glb) 뷰어
     확정(빨강) / 추정(주황) / 주의(노랑)
     각 지점: 예상 부피 + 내부 깊이 + 최적 진입 경로
+```
+
+### DA3 핵심 API 사용법
+
+```python
+from depth_anything_3.api import DepthAnything3
+
+model = DepthAnything3.from_pretrained("depth-anything/da3-large")
+model = model.to(device="cuda")
+
+# 메인 경로: DA3 단독 (포즈 + depth + 3D 메시)
+prediction = model.inference(
+    images,                    # 이미지 경로 리스트 또는 PIL/numpy
+    use_ray_pose=True,         # 자체 포즈 추정 (더 정확, 약간 느림)
+    export_dir="output",
+    export_format="glb"        # glb, ply, npz, gs_ply, gs_video
+)
+
+# 결과 접근
+prediction.depth          # [N, H, W] float32 — depth maps
+prediction.conf           # [N, H, W] float32 — confidence maps
+prediction.extrinsics     # [N, 3, 4] float32 — camera poses (w2c)
+prediction.intrinsics     # [N, 3, 3] float32 — camera intrinsics
+
+# COLMAP fallback 경로: DA3에 외부 포즈 주입
+prediction = model.inference(
+    images,
+    poses=colmap_poses,        # COLMAP에서 복원한 포즈
+    export_dir="output",
+    export_format="glb"
+)
+```
+
+### DA3 export 포맷 가이드
+
+| 포맷 | 용도 |
+|------|------|
+| glb | 3D 메시 — 웹 뷰어/심사 시연용 (권장) |
+| ply | Point Cloud — Voxel 분석 입력용 |
+| npz | depth + pose 수치 데이터 — 후처리용 |
+| gs_ply | 3D Gaussian Splatting — novel view synthesis |
+| gs_video | Gaussian Splatting 비디오 — 시연 영상용 |
+
+### Fallback 판정 로직
+
+```python
+def run_reconstruction(images: list[str]) -> Prediction:
+    """DA3 메인 → 신뢰도 낮으면 COLMAP fallback"""
+    prediction = da3_model.inference(
+        images, use_ray_pose=True,
+        export_dir="output", export_format="glb"
+    )
+    
+    if prediction.conf.mean() >= DA3_CONFIDENCE_THRESHOLD:
+        logger.info("DA3 단독 성공")
+        return prediction
+    
+    logger.warning("DA3 신뢰도 낮음 → COLMAP fallback")
+    colmap_poses = run_colmap_sfm(images)
+    prediction = da3_model.inference(
+        images, poses=colmap_poses,
+        export_dir="output", export_format="glb"
+    )
+    return prediction
 ```
 
 ---
@@ -169,11 +233,18 @@ VOXEL_SIZE_M       = 0.05
 VOID_MIN_VOLUME_M3 = 1.5       # 성인 1명 생존 최소 부피
 DEPTH_MIN_M        = 0.5
 
-# AI 모델 (VRAM 관리)
-COLMAP_GPU_INDEX  = 0              # COLMAP GPU 특징점 매칭용
+# DA3 설정 (메인 3D 복원 엔진)
 DA3_MODEL_SIZE    = "large"        # "large" 권장 (~4GB) / "giant"은 ~8GB로 OOM 위험
-SAM2_MODEL_TYPE   = "sam2_l"       # SAM2 Large
 DA3_BATCH_SIZE    = 4              # 배치 초과 시 OOM 발생
+DA3_USE_RAY_POSE  = True           # 자체 포즈 추정 (더 정확, 약간 느림)
+DA3_EXPORT_FORMAT = "glb"          # glb, ply, npz, gs_ply, gs_video
+DA3_CONFIDENCE_THRESHOLD = 0.5     # 이하 시 COLMAP fallback 발동
+
+# COLMAP (fallback 전용)
+COLMAP_GPU_INDEX  = 0              # GPU 특징점 매칭용
+
+# SAM2 / Florence-2
+SAM2_MODEL_TYPE   = "sam2_l"       # SAM2 Large
 ```
 
 ---
@@ -181,11 +252,27 @@ DA3_BATCH_SIZE    = 4              # 배치 초과 시 OOM 발생
 ## 7. AI 추론 에러 처리 패턴
 
 ```python
-def run_da3(images: list[np.ndarray], poses: np.ndarray) -> Optional[np.ndarray]:
+def run_da3(images: list[str]) -> Optional[Prediction]:
+    """DA3 메인 추론 + COLMAP fallback + OOM 처리"""
     try:
-        result = da3_model.inference(images)
-        logger.info(f"DA3 완료: depth shape={result.depth.shape}")
-        return result
+        prediction = da3_model.inference(
+            images, use_ray_pose=DA3_USE_RAY_POSE,
+            export_dir="output", export_format=DA3_EXPORT_FORMAT
+        )
+        
+        if prediction.conf.mean() >= DA3_CONFIDENCE_THRESHOLD:
+            logger.info(f"DA3 단독 성공: depth shape={prediction.depth.shape}")
+            return prediction
+        
+        # Fallback: COLMAP 포즈 → DA3 재추론
+        logger.warning("DA3 신뢰도 낮음 → COLMAP fallback")
+        colmap_poses = run_colmap_sfm(images)
+        prediction = da3_model.inference(
+            images, poses=colmap_poses,
+            export_dir="output", export_format=DA3_EXPORT_FORMAT
+        )
+        return prediction
+        
     except torch.cuda.OutOfMemoryError:
         logger.error("VRAM 부족 — DA3_BATCH_SIZE 줄이기")
         torch.cuda.empty_cache()

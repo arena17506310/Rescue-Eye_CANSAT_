@@ -15,13 +15,18 @@ pip install torch torchvision --index-url https://download.pytorch.org/whl/cu121
 # 기본 라이브러리
 pip install open3d numpy opencv-python scipy
 
-# COLMAP (Ubuntu 기준)
+# COLMAP (fallback 전용 — DA3 신뢰도 낮을 때만 사용)
 sudo apt-get install colmap
 # 또는 pip install pycolmap
 
-# DA3 (Depth Anything 3)
-pip install git+https://github.com/ByteDance-Seed/Depth-Anything-3.git
-# 또는: git clone https://github.com/ByteDance-Seed/Depth-Anything-3 && pip install -e .
+# DA3 (Depth Anything 3) — 메인 3D 복원 엔진
+pip install xformers
+git clone https://github.com/ByteDance-Seed/Depth-Anything-3 && cd Depth-Anything-3
+pip install -e .
+# 3D Gaussian Splatting export가 필요하면:
+pip install --no-build-isolation git+https://github.com/nerfstudio-project/gsplat.git@0b4dddf
+pip install -e ".[all]"
+cd ..
 
 # SAM2
 pip install git+https://github.com/facebookresearch/sam2.git
@@ -33,7 +38,8 @@ pip install transformers  # Florence-2는 HuggingFace transformers로 로드
 # 검증
 python -c "import torch; print(torch.cuda.is_available(), torch.cuda.get_device_name(0))"
 python -c "import open3d; print(open3d.__version__)"
-python -c "import pycolmap; print('COLMAP OK')"
+python -c "import pycolmap; print('COLMAP OK (fallback)')"
+python -c "from depth_anything_3.api import DepthAnything3; print('DA3 OK')"
 ```
 
 **완료 기준**: `torch.cuda.is_available() == True`
